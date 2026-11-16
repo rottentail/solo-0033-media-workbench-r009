@@ -43,31 +43,29 @@ def replace(conn, asset_id, words, expected_revision):
 
 
 def capture(conn, project_id):
-    conn.execute('SAVEPOINT caption_read')
-    try:
-        snapshot = timeline.snapshot(conn, project_id)
-        transcripts = {clip['asset_id']: get(conn, clip['asset_id']) for clip in snapshot['clips']}
-        return snapshot, transcripts
-    finally:
-        conn.execute('RELEASE SAVEPOINT caption_read')
+    # A plain read view: no SAVEPOINT/RELEASE pair, because releasing a
+    # savepoint leaves the connection inside an implicit transaction that
+    # later rejects a short write transaction on the same connection.
+    snapshot = timeline.snapshot(conn, project_id)
+    transcripts = {clip['asset_id']: get(conn, clip['asset_id']) for clip in snapshot['clips']}
+    return snapshot, transcripts
 
 
 def source_packets(snapshot, transcripts):
-    packets = {}
-    for clip in snapshot['clips']:
-        asset_id = clip['asset_id']
-        if asset_id in packets:
-            continue
-        transcript = transcripts[asset_id]
-        packet = {'asset_id': asset_id, 'revision': transcript['revision'],
-                  'words': []}
+    # One packet per occurrence, not per asset: repeated cuts of the same
+    # original keep independent trims, words and projected positions.
+    packets = []
+    for occurrence, clip in enumerate(snapshot['clips']):
+        transcript = transcripts[clip['asset_id']]
+        packet = {'occurrence': occurrence, 'asset_id': clip['asset_id'],
+                  'revision': transcript['revision'], 'words': []}
         for index, word in enumerate(transcript['words']):
             if word['start_ms'] < clip['start_ms'] or word['end_ms'] > clip['end_ms']:
                 continue
             packet['words'].append({'text': word['text'], 'source_index': index,
                 'start_ms': word['start_ms']-clip['start_ms'],
                 'end_ms': word['end_ms']-clip['start_ms']})
-        packets[asset_id] = packet
+        packets.append(packet)
     return packets
 
 
@@ -77,7 +75,7 @@ def project(snapshot, transcripts):
     offset = 0
     for occurrence, clip in enumerate(snapshot['clips']):
         length = clip['end_ms']-clip['start_ms']
-        packet = packets[clip['asset_id']]
+        packet = packets[occurrence]
         projected = []
         for word in packet['words']:
             if word['end_ms'] > length:

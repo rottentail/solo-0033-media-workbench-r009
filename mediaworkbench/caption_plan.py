@@ -26,32 +26,11 @@ def get(conn, plan_id):
     row = conn.execute('SELECT * FROM caption_plans WHERE id=?', (plan_id,)).fetchone()
     if row is None or hashlib.sha256(row['payload'].encode()).hexdigest() != row['payload_sha256']:
         raise ValueError('caption plan is missing or damaged')
-    saved = dict(json.loads(row['payload']), id=plan_id)
-    return refresh(conn, saved)
-
-
-def refresh(conn, saved):
-    snapshot, current = caption_words.capture(conn, saved['project']['id'])
-    recorded = {int(key): value for key, value in saved['transcripts'].items()}
-    needs_update = snapshot['project']['revision'] != saved['project']['revision']
-    for asset_id, transcript in current.items():
-        previous = recorded.get(asset_id)
-        if previous is None or previous['revision'] != transcript['revision']:
-            needs_update = True
-    if not needs_update:
-        return saved
-    tokens, duration = caption_words.project(snapshot, current)
-    updated = caption_layout.solve(tokens, duration, **saved['settings'])
-    result = dict(saved)
-    result['project'] = snapshot['project']
-    result['clips'] = snapshot['clips']
-    result['transcripts'] = current
-    result['tokens'] = tokens
-    result['duration_ms'] = duration
-    result['cues'] = updated['cues']
-    result['worst_rate'] = updated['worst_rate']
-    result['raggedness'] = updated['raggedness']
-    return result
+    # The saved payload is the immutable frozen plan.  Reading it back in
+    # another process must never reproject a newer timeline or transcript:
+    # preview and delivery always show exactly the captured words, times and
+    # line breaks, while proofreaders and editors keep changing live data.
+    return dict(json.loads(row['payload']), id=plan_id)
 
 
 def preview(conn, plan_id, at_ms):
